@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import CLDAP
 
 /// Browses Active Directory users and groups, forest-wide or scoped to one domain.
@@ -7,7 +8,29 @@ import CLDAP
 /// authentication. It is designed to run from non-domain-joined macOS clients
 /// reaching a domain over VPN, and does not require TLS on the wire — Kerberos
 /// negotiates LDAP signing for integrity protection on plain port 389/3268.
+///
+/// Runs on a dedicated default-QoS serial queue rather than the cooperative
+/// thread pool. The bind, RootDSE read, search, and listChildren calls all
+/// invoke synchronous C functions (Heimdal's krb5, cyrus-sasl, libldap) that
+/// block on socket I/O and internally dispatch to default-QoS system queues.
+/// Inheriting the caller's user-initiated QoS would create a priority
+/// inversion (`Hang risk` warnings at ad_bind.c:161 / :225) — by pinning the
+/// actor to a default-QoS executor the C work runs at its natural priority
+/// and the inversion goes away.
 public actor ADClient {
+
+    /// Shared serial executor for every ADClient instance. Multiple picker
+    /// sessions serialize through this queue, which is acceptable: each
+    /// bind/search takes O(100ms) and pickers are interactive, not bulk.
+    private static let sharedExecutor: DispatchSerialQueue = DispatchSerialQueue(
+        label: "dev.echodb.swift-active-directory",
+        qos: .default
+    )
+
+    public nonisolated var unownedExecutor: UnownedSerialExecutor {
+        Self.sharedExecutor.asUnownedSerialExecutor()
+    }
+
 
     public enum Transport: Sendable, Hashable {
         /// Plain LDAP on the supplied port (389 for a DC, 3268 for a Global Catalog).
