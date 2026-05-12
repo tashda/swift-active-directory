@@ -11,34 +11,84 @@ public enum ADDiscovery {
 
     /// Locate domain controllers for an AD domain.
     ///
-    /// If `domain` is a DNS-form name (contains a dot), the SRV record is
-    /// queried directly. If it is a NetBIOS short name, the resolver's
-    /// configured search domains are tried in turn — this matches what
-    /// Windows's DC locator does on a non-domain-joined client.
+    /// Tries every form Windows's DC locator would attempt before giving up,
+    /// in roughly decreasing order of specificity:
+    ///   1. literal `<domain>` if FQDN
+    ///   2. each DNS search domain (covers NetBIOS short names whose DNS
+    ///      suffix the VPN publishes via configd)
+    ///   3. `<NetBIOS>.<search>` combinations (covers shops whose AD DNS root
+    ///      is a subdomain *of* a search domain)
+    ///   4. the plain `_ldap._tcp.<x>` form (some smaller AD installs don't
+    ///      publish under `dc._msdcs`)
     public static func domainControllers(domain: String) async throws -> [ADServer] {
-        if domain.contains(".") {
-            return try await query(service: "_ldap._tcp.dc._msdcs.\(domain)", role: .domainController)
-        }
+        var triedNames: [String] = []
+        let candidates = candidateDomainNames(forUserInput: domain)
 
-        let searchDomains = systemSearchDomains()
-        var attempts: [(String, Error)] = []
-        for candidate in searchDomains {
-            do {
-                let dcs = try await query(service: "_ldap._tcp.dc._msdcs.\(candidate)", role: .domainController)
-                if !dcs.isEmpty { return dcs }
-            } catch {
-                attempts.append((candidate, error))
+        for candidate in candidates {
+            // Preferred: _ldap._tcp.dc._msdcs.<candidate>
+            let preferred = "_ldap._tcp.dc._msdcs.\(candidate)"
+            triedNames.append(preferred)
+            if let dcs = try? await query(service: preferred, role: .domainController), !dcs.isEmpty {
+                return dcs
+            }
+            // Fallback: _ldap._tcp.<candidate> (no dc._msdcs prefix)
+            let fallback = "_ldap._tcp.\(candidate)"
+            triedNames.append(fallback)
+            if let dcs = try? await query(service: fallback, role: .domainController), !dcs.isEmpty {
+                return dcs
             }
         }
 
-        let detail: String
-        if searchDomains.isEmpty {
-            detail = "DNS lookup for '\(domain)' returned no SRV records and this Mac has no DNS search domains configured. Either set the connection's domain to the AD DNS root (e.g. corp.example.com) or ensure the VPN is publishing search domains."
-        } else {
-            let triedList = searchDomains.joined(separator: ", ")
-            detail = "Neither '\(domain)' nor any DNS search domain on this Mac (tried: \(triedList)) published SRV records for an AD domain controller. Set the connection's domain to the AD DNS root (e.g. corp.example.com)."
+        let triedList = triedNames.prefix(8).joined(separator: ", ")
+        let more = triedNames.count > 8 ? " (+\(triedNames.count - 8) more)" : ""
+        throw ADError.discoveryFailed(reason: "No SRV records found for any candidate name derived from '\(domain)' on this Mac's DNS resolvers. Tried: \(triedList)\(more). Either set the connection's domain to the AD DNS root (e.g. corp.example.com), or check that the VPN is delivering corporate DNS.")
+    }
+
+    /// Builds the list of domain names to attempt SRV discovery against. Public
+    /// for unit testing — the production caller is `domainControllers(domain:)`.
+    static func candidateDomainNames(forUserInput input: String) -> [String] {
+        var candidates: [String] = []
+        var seen: Set<String> = []
+
+        func push(_ value: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return }
+            let lower = trimmed.lowercased()
+            guard !seen.contains(lower) else { return }
+            seen.insert(lower)
+            candidates.append(trimmed)
         }
-        throw ADError.discoveryFailed(reason: detail)
+
+        let searchDomains = systemSearchDomains()
+
+        if input.contains(".") {
+            // User gave an FQDN — try it first, then any search domain it lives under.
+            push(input)
+            for search in searchDomains where input.lowercased().hasSuffix("." + search.lowercased()) {
+                push(search)
+            }
+            for search in searchDomains { push(search) }
+        } else {
+            // NetBIOS short name. Prefer search domains whose leftmost label matches.
+            let lowerInput = input.lowercased()
+            for search in searchDomains where leftmostLabel(of: search).lowercased() == lowerInput {
+                push(search)
+            }
+            // Then any other search domain.
+            for search in searchDomains { push(search) }
+            // Then nested forms: <netbios>.<search>
+            for search in searchDomains {
+                push("\(input).\(search)")
+            }
+            // Finally the literal input — last because we already know it's likely to fail.
+            push(input)
+        }
+
+        return candidates
+    }
+
+    private static func leftmostLabel(of domain: String) -> String {
+        domain.split(separator: ".").first.map(String.init) ?? domain
     }
 
     /// Locate Global Catalog servers for a forest. `forestRoot` must be the

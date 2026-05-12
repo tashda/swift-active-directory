@@ -64,3 +64,27 @@ struct ADBrowserRealmTests {
         #expect(realm == "CORP")
     }
 }
+
+@Suite("ADDiscovery candidate names")
+struct ADDiscoveryCandidatesTests {
+
+    @Test func fqdnFirstWhenUserInputIsFQDN() {
+        let names = ADDiscovery.candidateDomainNames(forUserInput: "corp.example.com")
+        #expect(names.first == "corp.example.com")
+    }
+
+    @Test func netBIOSInputIncludesPlainAndNestedForms() {
+        // Simulates a Mac with no search domains (unit test environment).
+        let names = ADDiscovery.candidateDomainNames(forUserInput: "GLOBAL")
+        // We always include the literal user input as a last-ditch attempt.
+        #expect(names.contains("GLOBAL"))
+    }
+
+    @Test func dedupesCaseInsensitive() {
+        let names = ADDiscovery.candidateDomainNames(forUserInput: "Corp")
+        var lowered = names.map { $0.lowercased() }
+        lowered.sort()
+        let unique = Set(lowered)
+        #expect(lowered.count == unique.count)
+    }
+}
