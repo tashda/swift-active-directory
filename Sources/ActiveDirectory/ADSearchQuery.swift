@@ -26,13 +26,13 @@ public struct ADSearchQuery: Sendable, Hashable {
     }
 
     public let filter: Filter
-    public let scope: ADDirectoryClient.Scope
+    public let scope: ADClient.Scope
     public let pageSize: Int
     public let maxResults: Int
 
     public init(
         filter: Filter,
-        scope: ADDirectoryClient.Scope,
+        scope: ADClient.Scope,
         pageSize: Int = 100,
         maxResults: Int = 500
     ) {

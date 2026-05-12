@@ -2,11 +2,11 @@ import Foundation
 
 /// Browses Active Directory users and groups, forest-wide or scoped to one domain.
 ///
-/// `ADDirectoryClient` wraps the system LDAP client with SASL/GSSAPI (Kerberos)
+/// `ADClient` wraps the system LDAP client with SASL/GSSAPI (Kerberos)
 /// authentication. It is designed to run from non-domain-joined macOS clients
 /// reaching a domain over VPN, and does not require TLS on the wire — Kerberos
 /// negotiates LDAP signing for integrity protection on plain port 389/3268.
-public actor ADDirectoryClient {
+public actor ADClient {
 
     public enum Transport: Sendable, Hashable {
         /// Plain LDAP on the supplied port (389 for a DC, 3268 for a Global Catalog).

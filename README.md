@@ -1,4 +1,4 @@
-# ad-directory
+# swift-active-directory
 
 Active Directory browser client for macOS. Provides forest-wide search of users
 and groups via the Global Catalog, using Kerberos (SASL/GSSAPI) authentication
@@ -25,5 +25,5 @@ Windows-authenticated SQL Server logins and users.
 
 ## Status
 
-In development. The public API surface in `ADDirectoryClient` is the stable
+In development. The public API surface in `ADClient` is the stable
 contract; underlying implementation is being built out incrementally.

@@ -1,5 +1,5 @@
 import Testing
-@testable import ADDirectory
+@testable import ActiveDirectory
 
 @Test
 func principalProducesNTAccountName() {

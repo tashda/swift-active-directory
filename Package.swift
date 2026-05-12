@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "ad-directory",
+    name: "swift-active-directory",
     platforms: [
         .macOS(.v13),
     ],
     products: [
         .library(
-            name: "ADDirectory",
-            targets: ["ADDirectory"]),
+            name: "ActiveDirectory",
+            targets: ["ActiveDirectory"]),
     ],
     targets: [
         .target(
@@ -29,21 +29,21 @@ let package = Package(
             ]
         ),
         .target(
-            name: "ADDirectory",
+            name: "ActiveDirectory",
             dependencies: [
                 "CLDAP",
             ],
-            path: "Sources/ADDirectory",
+            path: "Sources/ActiveDirectory",
             linkerSettings: [
                 .linkedFramework("GSS"),
             ]
         ),
         .testTarget(
-            name: "ADDirectoryTests",
+            name: "ActiveDirectoryTests",
             dependencies: [
-                "ADDirectory",
+                "ActiveDirectory",
             ],
-            path: "Tests/ADDirectoryTests"
+            path: "Tests/ActiveDirectoryTests"
         ),
     ]
 )
