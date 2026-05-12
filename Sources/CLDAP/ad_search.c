@@ -90,6 +90,7 @@ int ad_session_read_root_dse(
 int ad_session_search(
     ad_session_t *session,
     const char *base_dn,
+    ad_search_scope_t scope,
     const char *filter,
     const char **attributes,
     int size_limit,
@@ -97,6 +98,13 @@ int ad_session_search(
     ad_search_result_t *out,
     char **err_out
 ) {
+    int ldap_scope;
+    switch (scope) {
+        case AD_SCOPE_BASE:      ldap_scope = LDAP_SCOPE_BASE; break;
+        case AD_SCOPE_ONE_LEVEL: ldap_scope = LDAP_SCOPE_ONELEVEL; break;
+        case AD_SCOPE_SUBTREE:
+        default:                 ldap_scope = LDAP_SCOPE_SUBTREE; break;
+    }
     if (err_out) *err_out = NULL;
     if (out == NULL) return -1;
     out->entries = NULL;
@@ -117,7 +125,7 @@ int ad_session_search(
     int rc = ldap_search_ext_s(
         session->ld,
         base_dn,
-        LDAP_SCOPE_SUBTREE,
+        ldap_scope,
         filter,
         (char **)(uintptr_t)attributes,
         0,

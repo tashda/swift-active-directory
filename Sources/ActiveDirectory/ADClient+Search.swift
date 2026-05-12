@@ -45,7 +45,12 @@ extension ADClient {
     public func search(_ query: ADSearchQuery) throws -> ADClient.SearchOutcome {
         guard let ptr = sessionPointer() else { throw ADError.notBound }
 
-        let baseDN = try resolveBaseDN(for: query.scope)
+        let baseDN: String
+        if let override = query.baseDNOverride, !override.isEmpty {
+            baseDN = override
+        } else {
+            baseDN = try resolveBaseDN(for: query.scope)
+        }
         let filter = ADClient.buildFilter(query.filter)
         let attributes: [String] = [
             "sAMAccountName",
@@ -64,6 +69,7 @@ extension ADClient {
                     let rc = ad_session_search(
                         ptr,
                         baseCStr,
+                        AD_SCOPE_SUBTREE,
                         filterCStr,
                         attrPtrs,
                         Int32(query.maxResults),
@@ -255,7 +261,7 @@ extension ADPrincipal.ObjectClass {
     }
 }
 
-private extension Array where Element == String {
+internal extension Array where Element == String {
     /// Bridges `[String]` to a NULL-terminated `UnsafePointer<UnsafePointer<CChar>?>?` for C APIs.
     func withCStringArray<R>(_ body: (UnsafeMutablePointer<UnsafePointer<CChar>?>) throws -> R) rethrows -> R {
         var cStrings: [UnsafePointer<CChar>?] = self.map { ($0 as NSString).utf8String }

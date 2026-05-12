@@ -27,17 +27,22 @@ public struct ADSearchQuery: Sendable, Hashable {
 
     public let filter: Filter
     public let scope: ADClient.Scope
+    /// Overrides the base DN derived from `scope`. Used by the tree browser
+    /// to narrow a search to a selected OU or container.
+    public let baseDNOverride: String?
     public let pageSize: Int
     public let maxResults: Int
 
     public init(
         filter: Filter,
         scope: ADClient.Scope,
+        baseDNOverride: String? = nil,
         pageSize: Int = 100,
         maxResults: Int = 500
     ) {
         self.filter = filter
         self.scope = scope
+        self.baseDNOverride = baseDNOverride
         self.pageSize = pageSize
         self.maxResults = maxResults
     }

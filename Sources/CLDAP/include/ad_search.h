@@ -48,11 +48,18 @@ int ad_session_read_root_dse(
     char *_Nullable *_Nullable err_out
 );
 
+typedef enum {
+    AD_SCOPE_BASE = 0,       /* the entry at base_dn only */
+    AD_SCOPE_ONE_LEVEL = 1,  /* direct children of base_dn */
+    AD_SCOPE_SUBTREE = 2     /* base_dn and every descendant */
+} ad_search_scope_t;
+
 /*
  * ad_session_search
- *   Performs an LDAP_SCOPE_SUBTREE search. Returns up to size_limit entries;
- *   if AD reports LDAP_SIZELIMIT_EXCEEDED, the result's size_limit_exceeded
- *   flag is set to 1 and the partial entry list is returned anyway.
+ *   Performs an LDAP search at the requested scope. Returns up to size_limit
+ *   entries; if AD reports LDAP_SIZELIMIT_EXCEEDED, the result's
+ *   size_limit_exceeded flag is set to 1 and the partial entry list is
+ *   returned anyway.
  *
  *   `attributes` is a NULL-terminated array of attribute names to request.
  *   Pass NULL to request all attributes (rare — usually expensive on AD).
@@ -62,6 +69,7 @@ int ad_session_read_root_dse(
 int ad_session_search(
     ad_session_t *_Nonnull session,
     const char *_Nonnull base_dn,
+    ad_search_scope_t scope,
     const char *_Nonnull filter,
     const char *_Nullable *_Nullable attributes,
     int size_limit,
