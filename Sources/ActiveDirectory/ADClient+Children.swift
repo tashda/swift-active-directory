@@ -51,19 +51,21 @@ extension ADClient {
         }
     }
 
-    /// Lists the child domains in this forest (read from the partitions
-    /// container in the configuration NC). Returns the DNS-form domain
-    /// names of every NC of objectClass `crossRef` whose `nETBIOSName` is set
-    /// — these are the real Windows-AD domains. Synthetic NCs (schema,
-    /// configuration, ForestDnsZones, DomainDnsZones) are filtered out.
+    /// Lists the child domains in this forest. Walks the partitions container
+    /// in the configuration NC and keeps only crossRef entries whose
+    /// `systemFlags` has `FLAG_CR_NTDS_DOMAIN` (0x00000002) set — that bit is
+    /// the canonical "this NC is a real AD domain" marker, so schema /
+    /// configuration / DNS zone partitions get filtered out automatically.
+    /// We deliberately do NOT filter on `nETBIOSName=*` because the Global
+    /// Catalog's partial attribute set occasionally drops it.
     public func listForestDomains() throws -> [String] {
         guard let ptr = sessionPointer() else { throw ADError.notBound }
         let dse = try readRootDSE()
         guard let configNC = dse.configurationNamingContext else { return [] }
 
         let partitionsDN = "CN=Partitions,\(configNC)"
-        let filter = "(&(objectClass=crossRef)(nETBIOSName=*))"
-        let attributes: [String] = ["nCName", "nETBIOSName", "dnsRoot"]
+        let filter = "(objectClass=crossRef)"
+        let attributes: [String] = ["nCName", "nETBIOSName", "dnsRoot", "systemFlags"]
 
         return try attributes.withCStringArray { attrPtrs in
             try filter.withCString { filterCStr in
@@ -161,18 +163,36 @@ extension ADClient {
         var out: [String] = []
         for i in 0..<result.entry_count {
             let entry = entries[i]
-            guard let ap = entry.attributes else { continue }
-            for j in 0..<entry.attribute_count {
-                let attr = ap[j]
-                guard let namePtr = attr.name else { continue }
-                let name = String(cString: namePtr).lowercased()
-                guard name == "dnsroot" else { continue }
-                if let vp = attr.values, attr.value_count > 0,
-                   let data = vp[0].data, vp[0].length > 0 {
-                    if let s = String(data: Data(bytes: data, count: vp[0].length), encoding: .utf8) {
-                        out.append(s)
+            var attrs: [String: [Data]] = [:]
+            if let ap = entry.attributes {
+                for j in 0..<entry.attribute_count {
+                    let attr = ap[j]
+                    guard let namePtr = attr.name else { continue }
+                    let name = String(cString: namePtr).lowercased()
+                    var values: [Data] = []
+                    if let vp = attr.values {
+                        for k in 0..<attr.value_count {
+                            let value = vp[k]
+                            if let data = value.data, value.length > 0 {
+                                values.append(Data(bytes: data, count: value.length))
+                            }
+                        }
                     }
+                    attrs[name] = values
                 }
+            }
+
+            // FLAG_CR_NTDS_DOMAIN = 0x00000002 marks an AD domain partition.
+            // Non-domain partitions (schema, configuration, ForestDnsZones,
+            // DomainDnsZones) lack this bit.
+            let flagsString = attrs["systemflags"]?.first.flatMap { String(data: $0, encoding: .utf8) } ?? "0"
+            let flags = Int(flagsString) ?? 0
+            guard (flags & 0x00000002) != 0 else { continue }
+
+            if let data = attrs["dnsroot"]?.first,
+               let s = String(data: data, encoding: .utf8),
+               !s.isEmpty {
+                out.append(s)
             }
         }
         return out.sorted()
