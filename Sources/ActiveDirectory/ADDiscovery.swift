@@ -48,9 +48,19 @@ public enum ADDiscovery {
     }
 
     /// Returns the DNS search domains currently configured on this host —
-    /// matches the `search` line output of `scutil --dns`, including any
-    /// domains pushed by an active VPN.
+    /// matches the `search domain[N]` output of `scutil --dns`, including
+    /// any domains pushed by an active VPN.
+    ///
+    /// We read configd's resolver state via `scutil --dns` rather than the
+    /// legacy `res_init`/`/etc/resolv.conf` path because on macOS the VPN-
+    /// pushed search domains live per-interface in configd and never
+    /// propagate to `/etc/resolv.conf`. Falls back to the libresolv list
+    /// only if scutil fails for some reason.
     public static func systemSearchDomains() -> [String] {
+        if let domains = scutilSearchDomains(), !domains.isEmpty {
+            return domains
+        }
+        // Legacy fallback — pure resolv.conf, mostly empty on modern macOS.
         var list = ad_dns_search_list_t(domains: nil, count: 0)
         guard ad_dns_search_list_copy(&list) == 0 else { return [] }
         defer { ad_dns_search_list_free(&list) }
@@ -62,6 +72,38 @@ public enum ADDiscovery {
             out.append(String(cstr: cstr))
         }
         return out
+    }
+
+    private static func scutilSearchDomains() -> [String]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+        process.arguments = ["--dns"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+
+        var domains: [String] = []
+        var seen: Set<String> = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Lines look like:  "search domain[0] : global.cashmgmt.net"
+            guard trimmed.hasPrefix("search domain") else { continue }
+            guard let colon = trimmed.firstIndex(of: ":") else { continue }
+            let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty, !seen.contains(value) else { continue }
+            seen.insert(value)
+            domains.append(value)
+        }
+        return domains
     }
 
     @concurrent
