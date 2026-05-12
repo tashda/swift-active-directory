@@ -113,6 +113,12 @@ extension ADClient {
         }
     }
 
+    // Test hooks — exposed for ActiveDirectoryTests; do not call from production code.
+    public static func _escapeFilterText_forTesting(_ raw: String) -> String { escapeFilterText(raw) }
+    public static func _buildFilter_forTesting(_ filter: ADSearchQuery.Filter) -> String { buildFilter(filter) }
+    public static func _dnFromDomain_forTesting(_ domain: String) -> String { dnFromDomain(domain) }
+    public static func _domainFromDN_forTesting(_ dn: String) -> String { domainFromDN(dn) }
+
     fileprivate static func buildFilter(_ filter: ADSearchQuery.Filter) -> String {
         var classClauses: [String] = []
         if filter.includeUsers {
