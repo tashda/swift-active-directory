@@ -27,6 +27,7 @@ let package = Package(
                 .linkedLibrary("lber"),
                 .linkedLibrary("resolv"),
                 .linkedFramework("GSS"),
+                .linkedFramework("Kerberos"),
             ]
         ),
         .target(

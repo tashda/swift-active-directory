@@ -2,20 +2,20 @@
 #include "CLDAP.h"
 
 #include <GSS/GSS.h>
+#include <Kerberos/krb5.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 struct ad_session {
     LDAP *ld;
-    gss_cred_id_t gss_cred;
+    /* Process-unique Kerberos memory ccache name (e.g. "MEMORY:adbrowser-12345-1").
+       Owned by the session; destroyed in ad_session_close so credentials never
+       outlive the picker window. */
+    char *ccache_name;
 };
-
-static char *ad_strdup_or_null(const char *s) {
-    if (s == NULL) return NULL;
-    return strdup(s);
-}
 
 static char *ad_format_error(const char *prefix, const char *detail) {
     if (prefix == NULL) prefix = "error";
@@ -27,31 +27,24 @@ static char *ad_format_error(const char *prefix, const char *detail) {
     return buf;
 }
 
-static char *ad_format_gss_error(const char *prefix, OM_uint32 major, OM_uint32 minor) {
-    /* Surface the human-readable major and minor messages from GSS. */
-    OM_uint32 ctx = 0;
-    OM_uint32 ms = 0;
-    gss_buffer_desc major_buf = GSS_C_EMPTY_BUFFER;
-    gss_buffer_desc minor_buf = GSS_C_EMPTY_BUFFER;
-
-    (void)gss_display_status(&ms, major, GSS_C_GSS_CODE, GSS_C_NO_OID, &ctx, &major_buf);
-    (void)gss_display_status(&ms, minor, GSS_C_MECH_CODE, GSS_C_NO_OID, &ctx, &minor_buf);
-
-    const char *maj = major_buf.value ? (const char *)major_buf.value : "gss error";
-    const char *min = minor_buf.value ? (const char *)minor_buf.value : "";
-    size_t needed = strlen(prefix) + strlen(maj) + strlen(min) + 8;
-    char *buf = (char *)malloc(needed);
-    if (buf != NULL) snprintf(buf, needed, "%s: %s (%s)", prefix, maj, min);
-
-    (void)gss_release_buffer(&ms, &major_buf);
-    (void)gss_release_buffer(&ms, &minor_buf);
-    return buf;
+static char *ad_format_krb5_error(krb5_context ctx, const char *prefix, krb5_error_code code) {
+    const char *detail = NULL;
+    if (ctx != NULL) {
+        detail = krb5_get_error_message(ctx, code);
+    }
+    char *out = ad_format_error(prefix, detail ? detail : "unknown Kerberos error");
+    if (ctx != NULL && detail != NULL) {
+        krb5_free_error_message(ctx, detail);
+    }
+    return out;
 }
 
 /*
- * Cyrus SASL interactive callback. With LDAP_OPT_X_SASL_GSS_CREDS supplying
- * the credential, no further user input is required — every SASL_CB_* request
- * is answered with an empty string to keep the SASL state machine moving.
+ * Cyrus SASL interactive callback. With the user's TGT already in the
+ * per-session memory ccache (and KRB5CCNAME pointed at it), the GSSAPI
+ * plugin has everything it needs and the callback is invoked only for
+ * cosmetic prompts like the SASL realm. Returning empty strings keeps the
+ * SASL state machine progressing.
  */
 static int ad_sasl_interact(LDAP *ld, unsigned flags, void *defaults, void *in) {
     (void)ld;
@@ -104,7 +97,7 @@ ad_session_t *ad_session_open(const char *uri, char **err_out) {
         return NULL;
     }
     s->ld = ld;
-    s->gss_cred = GSS_C_NO_CREDENTIAL;
+    s->ccache_name = NULL;
     return s;
 }
 
@@ -121,66 +114,117 @@ int ad_session_bind_kerberos(
         return -1;
     }
 
-    /* Build "user@REALM" principal name. */
+    /*
+     * The cyrus-sasl GSSAPI plugin used by libldap calls into the default GSS
+     * credential (gss_acquire_cred(NULL, ...)), which on macOS resolves via
+     * the default Kerberos ccache. So we obtain a TGT *into* a fresh in-memory
+     * ccache, point KRB5CCNAME at it, and the SASL bind picks up the tickets
+     * through the standard channel. This is the same approach `kinit` would
+     * take, without polluting the user's default ccache or Keychain.
+     *
+     * We deliberately do NOT use LDAP_OPT_X_SASL_GSS_CREDS — that option is
+     * defined in macOS's libldap headers but not honored by the vendored
+     * implementation, so ldap_set_option returns -1 and the bind fails with
+     * a misleading "Can't contact LDAP server" error.
+     */
+
+    krb5_context ctx = NULL;
+    krb5_error_code kerr = krb5_init_context(&ctx);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(NULL, "krb5_init_context", kerr);
+        return -1;
+    }
+
+    /* Construct user@REALM principal. */
     size_t princ_len = strlen(user) + strlen(realm) + 2;
-    char *princ = (char *)malloc(princ_len);
-    if (princ == NULL) {
+    char *princ_str = (char *)malloc(princ_len);
+    if (princ_str == NULL) {
+        krb5_free_context(ctx);
         if (err_out) *err_out = ad_format_error("malloc", "out of memory");
         return -1;
     }
-    snprintf(princ, princ_len, "%s@%s", user, realm);
+    snprintf(princ_str, princ_len, "%s@%s", user, realm);
 
-    OM_uint32 major = 0;
-    OM_uint32 minor = 0;
-    gss_buffer_desc name_buf;
-    name_buf.value = princ;
-    name_buf.length = strlen(princ);
-
-    gss_name_t gss_name = GSS_C_NO_NAME;
-    major = gss_import_name(&minor, &name_buf, GSS_C_NT_USER_NAME, &gss_name);
-    free(princ);
-    if (GSS_ERROR(major)) {
-        if (err_out) *err_out = ad_format_gss_error("gss_import_name", major, minor);
+    krb5_principal client_princ = NULL;
+    kerr = krb5_parse_name(ctx, princ_str, &client_princ);
+    free(princ_str);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(ctx, "krb5_parse_name", kerr);
+        krb5_free_context(ctx);
         return -1;
     }
 
-    gss_buffer_desc pw_buf;
-    pw_buf.value = (void *)password;
-    pw_buf.length = strlen(password);
-
-    gss_cred_id_t cred = GSS_C_NO_CREDENTIAL;
-    major = gss_acquire_cred_with_password(
-        &minor,
-        gss_name,
-        &pw_buf,
-        GSS_C_INDEFINITE,
-        GSS_C_NO_OID_SET,    /* default mech (Kerberos 5) */
-        GSS_C_INITIATE,
-        &cred,
+    /* Obtain a TGT by password. This contacts the KDC (discovered via DNS
+       SRV records for the realm) and returns the AS-REP credentials. */
+    krb5_creds creds;
+    memset(&creds, 0, sizeof(creds));
+    kerr = krb5_get_init_creds_password(
+        ctx,
+        &creds,
+        client_princ,
+        (char *)password,
+        NULL,   /* no prompter — non-interactive */
         NULL,
-        NULL
+        0,      /* default lifetime */
+        NULL,   /* no target service — we want a TGT */
+        NULL    /* default options */
     );
-
-    OM_uint32 ms = 0;
-    (void)gss_release_name(&ms, &gss_name);
-
-    if (GSS_ERROR(major)) {
-        if (err_out) *err_out = ad_format_gss_error("gss_acquire_cred_with_password", major, minor);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(ctx, "krb5_get_init_creds_password", kerr);
+        krb5_free_principal(ctx, client_princ);
+        krb5_free_context(ctx);
         return -1;
     }
 
-    /* Hand the credential to libldap's SASL/GSSAPI plugin. */
-    int rc = ldap_set_option(session->ld, LDAP_OPT_X_SASL_GSS_CREDS, (void *)cred);
-    if (rc != LDAP_OPT_SUCCESS) {
-        if (err_out) *err_out = ad_format_error("LDAP_OPT_X_SASL_GSS_CREDS", ldap_err2string(rc));
-        (void)gss_release_cred(&ms, &cred);
+    /* Build a process- and session-unique ccache name so concurrent picker
+       sessions don't collide and so credentials are isolated from the user's
+       default ccache. */
+    char ccname[128];
+    snprintf(ccname, sizeof(ccname), "MEMORY:adbrowser-%d-%p", (int)getpid(), (void *)session);
+
+    krb5_ccache cc = NULL;
+    kerr = krb5_cc_resolve(ctx, ccname, &cc);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(ctx, "krb5_cc_resolve", kerr);
+        krb5_free_cred_contents(ctx, &creds);
+        krb5_free_principal(ctx, client_princ);
+        krb5_free_context(ctx);
         return -1;
     }
-    session->gss_cred = cred;
 
-    rc = ldap_sasl_interactive_bind_s(
+    kerr = krb5_cc_initialize(ctx, cc, client_princ);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(ctx, "krb5_cc_initialize", kerr);
+        krb5_cc_close(ctx, cc);
+        krb5_free_cred_contents(ctx, &creds);
+        krb5_free_principal(ctx, client_princ);
+        krb5_free_context(ctx);
+        return -1;
+    }
+
+    kerr = krb5_cc_store_cred(ctx, cc, &creds);
+    if (kerr != 0) {
+        if (err_out) *err_out = ad_format_krb5_error(ctx, "krb5_cc_store_cred", kerr);
+        krb5_cc_close(ctx, cc);
+        krb5_free_cred_contents(ctx, &creds);
+        krb5_free_principal(ctx, client_princ);
+        krb5_free_context(ctx);
+        return -1;
+    }
+
+    /* The tickets are now in the memory ccache; close the handle (the named
+       ccache persists in-process) and tell GSSAPI where to find them. */
+    krb5_cc_close(ctx, cc);
+    krb5_free_cred_contents(ctx, &creds);
+    krb5_free_principal(ctx, client_princ);
+    krb5_free_context(ctx);
+
+    setenv("KRB5CCNAME", ccname, 1);
+    session->ccache_name = strdup(ccname);
+
+    int rc = ldap_sasl_interactive_bind_s(
         session->ld,
-        NULL,           /* let SASL/GSSAPI derive the bind DN from the credential */
+        NULL,
         "GSSAPI",
         NULL,
         NULL,
@@ -229,9 +273,18 @@ int ad_session_bind_simple(
 
 void ad_session_close(ad_session_t *session) {
     if (session == NULL) return;
-    OM_uint32 ms = 0;
-    if (session->gss_cred != GSS_C_NO_CREDENTIAL) {
-        (void)gss_release_cred(&ms, &session->gss_cred);
+    if (session->ccache_name != NULL) {
+        /* Destroy the memory ccache so credentials don't outlive the session. */
+        krb5_context ctx = NULL;
+        if (krb5_init_context(&ctx) == 0) {
+            krb5_ccache cc = NULL;
+            if (krb5_cc_resolve(ctx, session->ccache_name, &cc) == 0) {
+                (void)krb5_cc_destroy(ctx, cc);
+            }
+            krb5_free_context(ctx);
+        }
+        free(session->ccache_name);
+        session->ccache_name = NULL;
     }
     if (session->ld != NULL) {
         (void)ldap_unbind_ext_s(session->ld, NULL, NULL);
@@ -242,9 +295,3 @@ void ad_session_close(ad_session_t *session) {
 void ad_string_free(char *str) {
     free(str);
 }
-
-/* Avoid an "unused" warning until ad_strdup_or_null is consumed by the
-   search implementation in step 4. */
-__attribute__((unused)) static void *ad_internal_keepalive[] = {
-    (void *)ad_strdup_or_null
-};
