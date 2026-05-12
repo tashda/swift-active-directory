@@ -109,6 +109,12 @@ public actor ADClient {
         session = nil
     }
 
+    /// Hand the raw C pointer to same-actor extension methods (search, RootDSE).
+    /// Internal-only — never let this escape the actor.
+    internal func sessionPointer() -> OpaquePointer? {
+        session?.ptr
+    }
+
     private static func makeURI(server: ADServer, transport: Transport) -> String {
         let scheme: String
         switch transport {

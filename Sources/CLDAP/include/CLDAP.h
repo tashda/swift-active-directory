@@ -14,5 +14,6 @@
 
 #include "ad_bind.h"
 #include "ad_srv.h"
+#include "ad_search.h"
 
 #endif /* CLDAP_H */
