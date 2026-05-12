@@ -51,14 +51,19 @@ extension ADClient {
         }
     }
 
-    /// Lists the child domains in this forest. Walks the partitions container
-    /// in the configuration NC and keeps only crossRef entries whose
+    /// Lists every domain in this forest. Walks the partitions container in
+    /// the configuration NC and keeps only crossRef entries whose
     /// `systemFlags` has `FLAG_CR_NTDS_DOMAIN` (0x00000002) set — that bit is
     /// the canonical "this NC is a real AD domain" marker, so schema /
     /// configuration / DNS zone partitions get filtered out automatically.
     /// We deliberately do NOT filter on `nETBIOSName=*` because the Global
     /// Catalog's partial attribute set occasionally drops it.
-    public func listForestDomains() throws -> [String] {
+    ///
+    /// Returns the full triple (DNS root, NetBIOS short name, naming context
+    /// DN) for each domain so callers can pick the right form for whatever
+    /// they're feeding — SQL Server `CREATE LOGIN` wants the NetBIOS form,
+    /// Kerberos wants the DNS root, LDAP wants the DN.
+    public func listForestDomains() throws -> [ADDomain] {
         guard let ptr = sessionPointer() else { throw ADError.notBound }
         let dse = try readRootDSE()
         guard let configNC = dse.configurationNamingContext else { return [] }
@@ -90,7 +95,7 @@ extension ADClient {
                     }
                     defer { ad_search_result_free(&result) }
 
-                    return ADClient.decodeDNSRoots(from: &result)
+                    return ADClient.decodeDomains(from: &result)
                 }
             }
         }
@@ -158,9 +163,9 @@ extension ADClient {
         return out.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    fileprivate static func decodeDNSRoots(from result: inout ad_search_result_t) -> [String] {
+    fileprivate static func decodeDomains(from result: inout ad_search_result_t) -> [ADDomain] {
         guard let entries = result.entries else { return [] }
-        var out: [String] = []
+        var out: [ADDomain] = []
         for i in 0..<result.entry_count {
             let entry = entries[i]
             var attrs: [String: [Data]] = [:]
@@ -189,12 +194,17 @@ extension ADClient {
             let flags = Int(flagsString) ?? 0
             guard (flags & 0x00000002) != 0 else { continue }
 
-            if let data = attrs["dnsroot"]?.first,
-               let s = String(data: data, encoding: .utf8),
-               !s.isEmpty {
-                out.append(s)
-            }
+            let dnsRoot = attrs["dnsroot"]?.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let netBIOSName = attrs["netbiosname"]?.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let ncName = attrs["ncname"]?.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
+            guard !ncName.isEmpty else { continue }
+            out.append(ADDomain(
+                dnsRoot: dnsRoot,
+                netBIOSName: netBIOSName,
+                namingContext: ncName
+            ))
         }
-        return out.sorted()
+        return out.sorted { $0.dnsRoot.localizedCaseInsensitiveCompare($1.dnsRoot) == .orderedAscending }
     }
 }
