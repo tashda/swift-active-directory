@@ -26,6 +26,7 @@ let package = Package(
                 .linkedLibrary("ldap"),
                 .linkedLibrary("lber"),
                 .linkedLibrary("resolv"),
+                .linkedFramework("GSS"),
             ]
         ),
         .target(
@@ -33,10 +34,7 @@ let package = Package(
             dependencies: [
                 "CLDAP",
             ],
-            path: "Sources/ActiveDirectory",
-            linkerSettings: [
-                .linkedFramework("GSS"),
-            ]
+            path: "Sources/ActiveDirectory"
         ),
         .testTarget(
             name: "ActiveDirectoryTests",
