@@ -13,5 +13,6 @@
 #pragma clang diagnostic pop
 
 #include "ad_bind.h"
+#include "ad_srv.h"
 
 #endif /* CLDAP_H */
