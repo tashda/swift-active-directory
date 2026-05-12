@@ -45,3 +45,22 @@ struct ADClientFilterTests {
         #expect(domain == "corp.example.com")
     }
 }
+
+@Suite("ADBrowser realm derivation")
+struct ADBrowserRealmTests {
+
+    @Test func keepsUserInputWhenAlreadyFQDN() {
+        let realm = ADBrowser.effectiveRealm(userInput: "corp.example.com", discoveredDCHost: "dc01.corp.example.com")
+        #expect(realm == "corp.example.com")
+    }
+
+    @Test func derivesRealmFromDCHostnameWhenInputIsNetBIOS() {
+        let realm = ADBrowser.effectiveRealm(userInput: "CORP", discoveredDCHost: "dc01.corp.example.com")
+        #expect(realm == "corp.example.com")
+    }
+
+    @Test func fallsBackToInputWhenDCHostIsBare() {
+        let realm = ADBrowser.effectiveRealm(userInput: "CORP", discoveredDCHost: "dc01")
+        #expect(realm == "CORP")
+    }
+}

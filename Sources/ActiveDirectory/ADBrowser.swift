@@ -16,24 +16,30 @@ public enum ADBrowser {
 
     /// Opens a Global Catalog connection suitable for forest-wide searches.
     ///
-    /// Discovers a DC for `anyDomainInForest`, binds with `credentials`, reads
-    /// the forest root from RootDSE, discovers a Global Catalog for that root,
-    /// and binds the GC. Returns a ready-to-search ADClient plus the resolved
-    /// forest metadata.
+    /// Discovers a DC for `anyDomainInForest` (NetBIOS or DNS form), binds with
+    /// `credentials`, reads the forest root from RootDSE, discovers a Global
+    /// Catalog for that root, and binds the GC. Returns a ready-to-search
+    /// ADClient plus the resolved forest metadata.
+    ///
+    /// If the supplied `domain` is a NetBIOS short name (no dots), the
+    /// effective Kerberos realm is derived from the discovered DC's hostname
+    /// suffix — necessary because Kerberos KDC discovery is by DNS, and a
+    /// NetBIOS realm name does not resolve.
     public static func openForestCatalog(
         anyDomainInForest domain: String,
         credentials: ADCredentials,
         transport: ADClient.Transport = .plain
     ) async throws -> ForestSession {
-        // 1. Find a DC for the user's domain.
         let dcs = try await ADDiscovery.domainControllers(domain: domain)
         guard let dc = dcs.first else {
             throw ADError.discoveryFailed(reason: "No domain controllers found for \(domain)")
         }
 
-        // 2. Bind it just long enough to read RootDSE.
+        let realm = effectiveRealm(userInput: domain, discoveredDCHost: dc.host)
+        let effectiveCredentials = rewrite(credentials: credentials, withDomain: realm)
+
         let dcClient = try ADClient(server: dc, transport: transport)
-        try await dcClient.bind(credentials)
+        try await dcClient.bind(effectiveCredentials)
         let dse = try await dcClient.readRootDSE()
         await dcClient.close()
 
@@ -42,17 +48,13 @@ public enum ADBrowser {
             throw ADError.discoveryFailed(reason: "RootDSE missing rootDomainNamingContext on \(dc.host)")
         }
 
-        // 3. Find a Global Catalog for the forest root.
         let gcs = try await ADDiscovery.globalCatalogs(forestRoot: forestRoot)
         guard let gc = gcs.first else {
             throw ADError.discoveryFailed(reason: "No global catalogs found for forest \(forestRoot)")
         }
-        // GCs listen on port 3268 (plain) / 3269 (LDAPS) regardless of what the SRV record
-        // claims, but trust the SRV record — AD always publishes the right port.
 
-        // 4. Bind the GC.
         let gcClient = try ADClient(server: gc, transport: transport)
-        try await gcClient.bind(credentials)
+        try await gcClient.bind(effectiveCredentials)
 
         return ForestSession(
             client: gcClient,
@@ -71,8 +73,32 @@ public enum ADBrowser {
         guard let dc = dcs.first else {
             throw ADError.discoveryFailed(reason: "No domain controllers found for \(domain)")
         }
+        let realm = effectiveRealm(userInput: domain, discoveredDCHost: dc.host)
+        let effectiveCredentials = rewrite(credentials: credentials, withDomain: realm)
+
         let client = try ADClient(server: dc, transport: transport)
-        try await client.bind(credentials)
+        try await client.bind(effectiveCredentials)
         return client
+    }
+
+    // MARK: - Realm resolution
+
+    /// If the user typed a DNS-form domain we keep it. If they typed a NetBIOS
+    /// short name, we use the discovered DC's parent zone — that's the actual
+    /// Kerberos realm.
+    static func effectiveRealm(userInput: String, discoveredDCHost: String) -> String {
+        if userInput.contains(".") { return userInput }
+        let parts = discoveredDCHost.split(separator: ".")
+        guard parts.count >= 2 else { return userInput }
+        return parts.dropFirst().joined(separator: ".")
+    }
+
+    private static func rewrite(credentials: ADCredentials, withDomain newDomain: String) -> ADCredentials {
+        switch credentials.method {
+        case let .kerberos(_, user, password):
+            return ADCredentials(method: .kerberos(domain: newDomain, user: user, password: password))
+        case .kerberosTicket, .simple:
+            return credentials
+        }
     }
 }
