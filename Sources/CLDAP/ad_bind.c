@@ -233,7 +233,22 @@ int ad_session_bind_kerberos(
         NULL
     );
     if (rc != LDAP_SUCCESS) {
-        if (err_out) *err_out = ad_format_error("ldap_sasl_interactive_bind_s GSSAPI", ldap_err2string(rc));
+        /* "Local error" is libldap's generic SASL/GSS wrapper. The real
+           reason — cross-realm referral failure, KDC unreachable, time
+           skew, missing SPN — lives in the diagnostic message slot the
+           SASL plugin populates. Fetch it so the picker can surface the
+           actual diagnostic instead of just "Local error". */
+        char *diag = NULL;
+        (void)ldap_get_option(session->ld, LDAP_OPT_DIAGNOSTIC_MESSAGE, &diag);
+        const char *short_msg = ldap_err2string(rc);
+        char buf[1024];
+        if (diag != NULL && diag[0] != '\0') {
+            snprintf(buf, sizeof(buf), "%s — %s", short_msg, diag);
+        } else {
+            snprintf(buf, sizeof(buf), "%s", short_msg);
+        }
+        if (diag != NULL) ldap_memfree(diag);
+        if (err_out) *err_out = ad_format_error("ldap_sasl_interactive_bind_s GSSAPI", buf);
         return rc;
     }
     return 0;
