@@ -90,6 +90,22 @@ ad_session_t *ad_session_open(const char *uri, char **err_out) {
         return NULL;
     }
 
+    /* Disable reverse-DNS canonicalization before SASL/GSSAPI bind. Without
+       this, libldap looks up the connection's IP to derive the "real"
+       hostname and feeds *that* to the SASL plugin for SPN construction.
+       In trust-bridged or VPN'd networks the PTR record often returns an
+       IP-derived literal (e.g. "181.148.66.in-addr.arpa") and the realm
+       derivation produces nonsense. With NOCANON on, the SPN is built
+       from the hostname we supplied in the URI — the exact name DNS SRV
+       discovery gave us — so cross-realm referrals work as expected. */
+    int nocanon = 1;
+    rc = ldap_set_option(ld, LDAP_OPT_X_SASL_NOCANON, &nocanon);
+    if (rc != LDAP_OPT_SUCCESS) {
+        if (err_out) *err_out = ad_format_error("LDAP_OPT_X_SASL_NOCANON", ldap_err2string(rc));
+        ldap_unbind_ext_s(ld, NULL, NULL);
+        return NULL;
+    }
+
     ad_session_t *s = (ad_session_t *)calloc(1, sizeof(ad_session_t));
     if (s == NULL) {
         if (err_out) *err_out = ad_format_error("calloc", "out of memory");
