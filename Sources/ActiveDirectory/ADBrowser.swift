@@ -64,6 +64,15 @@ public enum ADBrowser {
     }
 
     /// Opens a DC connection for a single-domain search. Skips the GC hop.
+    ///
+    /// **Cross-realm friendly:** the `credentials` passed here MUST have a
+    /// `domain` set to the user's *home* Kerberos realm — the realm where
+    /// their password is actually valid. If `domain` here points at a
+    /// trusted external domain, Heimdal uses cross-realm referrals through
+    /// the trust to acquire a service ticket for that domain's DC. The
+    /// caller is responsible for not "rewriting" credentials to the target
+    /// domain (that would try to authenticate to the wrong KDC and fail
+    /// with `Client unknown`).
     public static func openDomainController(
         domain: String,
         credentials: ADCredentials,
@@ -73,11 +82,8 @@ public enum ADBrowser {
         guard let dc = dcs.first else {
             throw ADError.discoveryFailed(reason: "No domain controllers found for \(domain)")
         }
-        let realm = effectiveRealm(userInput: domain, discoveredDCHost: dc.host)
-        let effectiveCredentials = rewrite(credentials: credentials, withDomain: realm)
-
         let client = try ADClient(server: dc, transport: transport)
-        try await client.bind(effectiveCredentials)
+        try await client.bind(credentials)
         return client
     }
 
