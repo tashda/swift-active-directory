@@ -4,7 +4,7 @@ Active Directory browser client for macOS. Provides forest-wide search of users
 and groups via the Global Catalog, using Kerberos (SASL/GSSAPI) authentication
 without requiring the Mac to be domain-joined.
 
-Used by [Echo](https://github.com/tashda/echo) to back the "Browse…" picker on
+Used by [Echo](https://github.com/tashda/Echo) to back the "Browse…" picker on
 Windows-authenticated SQL Server logins and users.
 
 ## Requirements
