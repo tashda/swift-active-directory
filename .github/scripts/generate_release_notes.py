@@ -14,6 +14,8 @@ import subprocess
 from collections import Counter, OrderedDict
 
 DOCUMENTATION_SUFFIXES = (".md", ".docc", ".txt")
+# GitHub cuts a release body at 125,000 characters; the newest commits are the ones worth listing.
+MAX_COMMITS = 150
 
 
 def git(*args: str) -> str:
@@ -66,17 +68,20 @@ def commit_range(previous_tag: str | None) -> str | None:
     return f"{previous_tag}..HEAD" if verified.returncode == 0 else None
 
 
-def load_commits(range_spec: str | None) -> OrderedDict[str, list[tuple[str, list[str]]]]:
+def load_commits(range_spec: str | None) -> tuple[OrderedDict[str, list[tuple[str, list[str]]]], int]:
+    """The commits grouped by category, and how many older ones were left out."""
     if range_spec:
         hashes = git_lines("rev-list", "--reverse", "--no-merges", range_spec)
     else:
         hashes = git_lines("rev-list", "--reverse", "--max-count=30", "--no-merges", "HEAD")
+    omitted = max(0, len(hashes) - MAX_COMMITS)
+    hashes = hashes[omitted:]
     grouped: OrderedDict[str, list[tuple[str, list[str]]]] = OrderedDict()
     for commit_hash in hashes:
         subject = git("show", "-s", "--format=%s", commit_hash)
         files = git_lines("show", "--format=", "--name-only", "--diff-filter=ACDMRTUXB", commit_hash)
         grouped.setdefault(category_of_commit(files), []).append((subject, files))
-    return grouped
+    return grouped, omitted
 
 
 def main() -> None:
@@ -91,7 +96,7 @@ def main() -> None:
     range_spec = commit_range(previous_tag)
     if range_spec is None:
         previous_tag = None
-    grouped = load_commits(range_spec)
+    grouped, omitted = load_commits(range_spec)
     commit_count = sum(len(entries) for entries in grouped.values())
     repository = os.environ.get("GITHUB_REPOSITORY", "")
 
@@ -101,6 +106,8 @@ def main() -> None:
     else:
         lines.append(f"- First release: the latest {commit_count} commits are listed")
     lines.append(f"- Commits included: {commit_count}")
+    if omitted:
+        lines.append(f"- {omitted} older commits are not listed; the compare link shows all of them")
     if repository and previous_tag:
         lines.append(f"- Compare: https://github.com/{repository}/compare/{previous_tag}...{args.new_tag}")
     lines.extend(["", "## Detailed Changes", ""])
