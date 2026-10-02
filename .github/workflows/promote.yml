@@ -1,0 +1,53 @@
+name: Promote
+
+# Promotes the tested tip of dev to main and releases it (see .github/scripts/promote.sh). Run it
+# from the Actions tab, or: gh workflow run promote.yml -f version=1.2.0
+# The file is identical in every package repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 1.2.0 (empty: the next patch number)"
+        required: false
+        type: string
+      dry_run:
+        description: "Only check and show what would happen"
+        required: false
+        type: boolean
+        default: false
+      allow_unchecked:
+        description: "Release even if CI has not passed on the dev tip"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote dev to main and release
+    runs-on: ubuntu-latest
+    steps:
+      # GitHub's built-in token cannot push a commit that changes files under .github/workflows. If a
+      # promotion carries such a change, add a personal access token (contents, workflows and actions
+      # write) as the repository secret RELEASE_TOKEN; it is used when present.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ALLOW_UNCHECKED: ${{ inputs.allow_unchecked }}
+        run: bash .github/scripts/promote.sh
